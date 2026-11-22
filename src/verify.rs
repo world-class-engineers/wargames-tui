@@ -2,35 +2,63 @@
 
 use crate::credentials::Secret;
 use crate::ssh;
+use crate::wargame::Wargame;
 use std::io::Read;
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub const VERIFY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Shared cancellation flag for one verification attempt. The owner can cancel
+/// when the user switches games; the worker signals `Verified` as usual so the
+/// existing id/game staleness checks discard the result.
+#[derive(Debug, Clone, Default)]
+pub struct VerifyCancel {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl VerifyCancel {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+}
 const STDERR_DRAIN_TIMEOUT: Duration = Duration::from_millis(250);
 const STDERR_DRAIN_LIMIT: u64 = 8192;
 
 /// Verify a secret by attempting a single, non-interactive SSH command against
-/// the next level. Always reaps the child and its process group, including on
-/// timeout. Passwords work with `sshpass` when installed and otherwise through
-/// the OpenSSH `SSH_ASKPASS` helper created in `config_dir`.
+/// the next level. Always reaps the child, including on timeout or cancellation;
+/// its process group is signalled only while the child is still unreaped.
+/// Passwords work with `sshpass` when installed and otherwise through the
+/// OpenSSH `SSH_ASKPASS` helper created in `config_dir`.
 pub fn verify_secret(
+    game: &Wargame,
     level: u16,
     secret: &Secret,
     timeout: Duration,
     known_hosts: &Path,
     config_dir: &Path,
+    cancel: &VerifyCancel,
 ) -> Result<(), String> {
     ssh::ensure_known_hosts(known_hosts)
         .map_err(|error| format!("could not prepare known_hosts: {error:#}"))?;
-    let command = ssh::verification_command(level, secret, known_hosts, config_dir)
+    let command = ssh::verification_command(game, level, secret, known_hosts, config_dir)
         .map_err(|error| format!("could not prepare password verification: {error:#}"))?;
-    let result = verify_command(level, command, timeout);
+    let result = verify_command(&game.level_label(level), command, timeout, cancel);
     // Defensive: SSH should never echo a password, but a misbehaving helper or
     // host must not leak the secret into the status box via stderr.
     match (result, secret) {
@@ -48,7 +76,12 @@ fn redact(message: &str, secret: &str) -> String {
 
 /// Run a prepared command with process-group teardown and a bounded stderr
 /// drain. Kept separate from `verify_secret` so tests can use local stubs.
-fn verify_command(level: u16, mut command: Command, timeout: Duration) -> Result<(), String> {
+fn verify_command(
+    level_label: &str,
+    mut command: Command,
+    timeout: Duration,
+    cancel: &VerifyCancel,
+) -> Result<(), String> {
     command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -87,18 +120,26 @@ fn verify_command(level: u16, mut command: Command, timeout: Duration) -> Result
 
     let deadline = Instant::now() + timeout;
     loop {
+        if cancel.is_cancelled() {
+            // The direct child is still unreaped here, so its pid (and thus
+            // the process-group id) cannot have been recycled yet.
+            kill_group(pid, true);
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!("verification for {level_label} was cancelled"));
+        }
         match child.try_wait() {
             Ok(Some(status)) => {
-                // A verifier can spawn children (sshpass -> ssh); reap the
-                // whole group even after the direct child has exited.
-                kill_group(pid, true);
+                // `try_wait` reaped the child. Signalling -pid now could hit a
+                // recycled process group, so skip the group signal: SSH's own
+                // descendants exit with the direct child on the success/failure
+                // path. Timeout and cancellation signal the group before reaping.
                 if status.success() {
                     return Ok(());
                 }
                 let detail = read_detail(&stderr_rx);
                 return Err(format!(
-                    "authentication/connection failed for bandit{} (ssh exit {status}){}",
-                    level,
+                    "authentication/connection failed for {level_label} (ssh exit {status}){}",
                     detail
                         .map(|text| format!(": {}", truncate(&text, 400)))
                         .unwrap_or_default()
@@ -185,9 +226,10 @@ mod tests {
     #[test]
     fn stubbed_verifier_reports_stderr_on_failure() {
         let result = verify_command(
-            1,
+            "bandit1",
             stub("printf 'stub authentication failed\\n' >&2; exit 1"),
             Duration::from_secs(3),
+            &VerifyCancel::new(),
         );
         let error = result.unwrap_err();
         assert!(error.contains("stub authentication failed"), "{error}");
@@ -196,7 +238,39 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn stubbed_verifier_accepts_success() {
-        verify_command(1, stub("exit 0"), Duration::from_secs(3)).unwrap();
+        verify_command(
+            "bandit1",
+            stub("exit 0"),
+            Duration::from_secs(3),
+            &VerifyCancel::new(),
+        )
+        .unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancellation_tears_down_stubbed_verifier() {
+        let cancel = VerifyCancel::new();
+        let cancellation = cancel.clone();
+        let stopper = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            cancellation.cancel();
+        });
+        let started = Instant::now();
+        let error = verify_command(
+            "bandit1",
+            stub("sleep 30 & wait"),
+            Duration::from_secs(10),
+            &cancel,
+        )
+        .unwrap_err();
+        stopper.join().unwrap();
+        assert!(error.contains("cancelled"), "{error}");
+        assert!(
+            started.elapsed() < Duration::from_secs(4),
+            "cancelled verifier blocked for {:?}",
+            started.elapsed()
+        );
     }
 
     #[cfg(unix)]
@@ -204,9 +278,10 @@ mod tests {
     fn stubbed_verifier_timeout_is_bounded() {
         let started = Instant::now();
         let result = verify_command(
-            1,
+            "bandit1",
             stub("sleep 30 & sleep 30 & wait"),
             Duration::from_millis(300),
+            &VerifyCancel::new(),
         );
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("timed out"));

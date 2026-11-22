@@ -36,7 +36,7 @@ impl PtySession {
     /// when the reader must inject a saved password at the remote prompt.
     /// `make_exit` maps the session generation into the caller's message type.
     pub fn spawn<T: Send + 'static>(
-        level: u16,
+        level_label: &str,
         command: CommandBuilder,
         auto_password: Option<String>,
         size: PtySize,
@@ -51,7 +51,7 @@ impl PtySession {
             generation,
             exit_tx,
             make_exit,
-            format!("spawning SSH for bandit{level}"),
+            format!("spawning SSH for {level_label}"),
         )
     }
 
@@ -202,10 +202,11 @@ impl PtySession {
     pub fn terminate(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         #[cfg(unix)]
-        if let Some(wake) = self.wake_writer.as_mut()
-            && let Err(error) = wake.write_all(&[1])
-        {
-            eprintln!("bandit-tui: could not wake PTY reader: {error}");
+        if let Some(mut wake) = self.wake_writer.take() {
+            // The reader may already have exited (natural EOF or a previous
+            // terminate), so the wake is best-effort. Taking the writer makes
+            // repeated teardown idempotent and keeps EPIPE out of the TUI.
+            let _ = wake.write_all(&[1]);
         }
 
         // Dropping our writer lets the reader observe EOF once the child exits.
@@ -235,13 +236,13 @@ impl PtySession {
             }
         }
 
-        // SIGKILL the whole group so sshpass/ssh grandchildren cannot keep the
-        // PTY slave open or linger after the UI has moved on.
-        #[cfg(unix)]
-        Self::signal_group(pid, libc::SIGKILL);
+        // SIGKILL the whole group only while the direct child is unreaped:
+        // after `try_wait` reaps it, its pid (and process-group id) may already
+        // have been recycled for an unrelated process. SIGHUP above still
+        // reaches the session's descendants.
         if !reaped {
-            // Fallback if the group signal failed; avoid signalling a reused
-            // pid after the child has already been reaped.
+            #[cfg(unix)]
+            Self::signal_group(pid, libc::SIGKILL);
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
@@ -600,6 +601,8 @@ mod tests {
         )
         .unwrap();
         let started = Instant::now();
+        session.terminate();
+        assert!(session.wake_writer.is_none());
         session.terminate();
         assert!(
             started.elapsed() < Duration::from_secs(3),

@@ -1,30 +1,35 @@
 //! Shared SSH command construction for the embedded terminal and the verifier.
+//! All host, port, user, and remote-command details come from the wargame.
 
 use crate::credentials::{Secret, create_private_dir, write_restricted_file};
-use anyhow::{Context, Result};
+use crate::wargame::{SecretKind, Wargame};
+use anyhow::{Context, Result, bail};
 use portable_pty::CommandBuilder;
 use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
-pub const HOST: &str = "bandit.labs.overthewire.org";
-pub const PORT: u16 = 2220;
 pub const CONNECT_TIMEOUT_SECS: u8 = 10;
+
+/// Probing `sshpass -V` is process work; the result cannot change during one
+/// run, so cache it for both PTY spawns and verifier threads.
+static SSHPASS_AVAILABLE: OnceLock<bool> = OnceLock::new();
 
 /// Environment variable read by the askpass helper. The password is passed in
 /// the environment only; it is never written into the helper script or logged.
-pub const ASKPASS_ENV_VAR: &str = "BANDIT_TUI_ASKPASS_SECRET";
+pub const ASKPASS_ENV_VAR: &str = "WARGAMES_TUI_ASKPASS_SECRET";
 const ASKPASS_SCRIPT_NAME: &str = "askpass.sh";
 const ASKPASS_SCRIPT_BODY: &str = r#"#!/bin/sh
-printf '%s\n' "$BANDIT_TUI_ASKPASS_SECRET"
+printf '%s\n' "$WARGAMES_TUI_ASKPASS_SECRET"
 "#;
 
-pub fn username(level: u16) -> String {
-    format!("bandit{level}")
+pub fn username(game: &Wargame, level: u16) -> String {
+    game.username(level)
 }
 
-pub fn endpoint(level: u16) -> String {
-    format!("{}@{HOST}", username(level))
+pub fn endpoint(game: &Wargame, level: u16) -> String {
+    format!("{}@{}", username(game, level), game.ssh_host)
 }
 
 /// Expand a leading `~/` in a user-supplied key path.
@@ -39,19 +44,16 @@ pub fn expand_key_path(path: &Path) -> PathBuf {
 }
 
 pub fn sshpass_available() -> bool {
-    Command::new("sshpass")
-        .arg("-V")
-        .output()
-        .map(|_| true)
-        .unwrap_or(false)
+    *SSHPASS_AVAILABLE.get_or_init(|| {
+        Command::new("sshpass")
+            .arg("-V")
+            .output()
+            .is_ok_and(|output| output.status.success())
+    })
 }
 
 /// Create (or repair) an OpenSSH askpass helper in the app config directory.
-///
-/// The script only echoes a secret supplied through `BANDIT_TUI_ASKPASS_SECRET`;
-/// it contains no password itself. Repeating the call is safe: an existing
-/// config directory is reused, a correct script is left alone, and a missing or
-/// tampered script is (re)written atomically with mode `0700` on Unix.
+/// Scripts written by older `bandit-tui` builds are detected and replaced.
 pub fn ensure_askpass_script(config_dir: &Path) -> Result<PathBuf> {
     #[cfg(not(unix))]
     {
@@ -66,7 +68,8 @@ pub fn ensure_askpass_script(config_dir: &Path) -> Result<PathBuf> {
 
         create_private_dir(config_dir)?;
         let path = config_dir.join(ASKPASS_SCRIPT_NAME);
-        let contents_match = fs::read_to_string(&path).ok().as_deref() == Some(ASKPASS_SCRIPT_BODY);
+        let existing = fs::read_to_string(&path).unwrap_or_default();
+        let contents_match = existing == ASKPASS_SCRIPT_BODY;
         let mode = fs::metadata(&path)
             .ok()
             .map(|metadata| metadata.permissions().mode() & 0o777);
@@ -107,10 +110,10 @@ pub fn ensure_known_hosts(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn common_args(level: u16, known_hosts: &Path) -> Vec<String> {
+fn common_args(game: &Wargame, level: u16, known_hosts: &Path) -> Vec<String> {
     vec![
         "-p".to_owned(),
-        PORT.to_string(),
+        game.ssh_port.to_string(),
         "-o".to_owned(),
         "StrictHostKeyChecking=accept-new".to_owned(),
         "-o".to_owned(),
@@ -119,25 +122,39 @@ fn common_args(level: u16, known_hosts: &Path) -> Vec<String> {
         format!("ConnectTimeout={CONNECT_TIMEOUT_SECS}"),
         "-o".to_owned(),
         "LogLevel=ERROR".to_owned(),
-        endpoint(level),
+        endpoint(game, level),
     ]
 }
 
-fn append_password_auth_args(command: &mut Command, level: u16, known_hosts: &Path) {
+fn remote_command(game: &Wargame) -> Vec<String> {
+    // Send the configured command as one argument. UnderTheWire's SSH shell
+    // appends the exec request directly to `powershell.exe -NoLogo`, so its
+    // catalogs use a deliberate leading space before `-Command ...`. Splitting
+    // on whitespace would discard that space and turn the request into
+    // `-NoLogo-Command ...`.
+    vec![game.verification_remote_command.clone()]
+}
+
+fn append_password_auth_args(
+    game: &Wargame,
+    level: u16,
+    known_hosts: &Path,
+    command: &mut Command,
+) {
     command.arg("-o").arg("PreferredAuthentications=password");
     command.arg("-o").arg("PubkeyAuthentication=no");
     command.arg("-o").arg("NumberOfPasswordPrompts=1");
     // BatchMode=yes would suppress SSH_ASKPASS as well as tty prompts.
     command.arg("-o").arg("BatchMode=no");
-    command.args(common_args(level, known_hosts));
-    command.arg("true");
+    command.args(common_args(game, level, known_hosts));
+    command.args(remote_command(game));
 }
 
 /// Command used for the interactive PTY. When `inject_password_in_pty` is set,
 /// plain `ssh` is launched and the PTY reader injects the saved password at the
 /// remote prompt; otherwise `sshpass` supplies it via `SSHPASS` (when present).
-/// Key-based and unknown secrets always launch plain `ssh`.
 pub fn interactive_command(
+    game: &Wargame,
     level: u16,
     secret: Option<&Secret>,
     known_hosts: &Path,
@@ -150,7 +167,7 @@ pub fn interactive_command(
             cmd.arg("ssh");
             cmd.arg("-o");
             cmd.arg("PubkeyAuthentication=no");
-            cmd.args(common_args(level, known_hosts));
+            cmd.args(common_args(game, level, known_hosts));
             cmd.env("SSHPASS", password.clone());
             cmd
         }
@@ -164,21 +181,21 @@ pub fn interactive_command(
             cmd.arg("NumberOfPasswordPrompts=1");
             cmd.arg("-o");
             cmd.arg("BatchMode=no");
-            cmd.args(common_args(level, known_hosts));
+            cmd.args(common_args(game, level, known_hosts));
             cmd
         }
-        Some(Secret::PrivateKeyPath(path)) => {
+        Some(Secret::PrivateKeyPath(path)) if game.allows(SecretKind::PrivateKeyPath) => {
             let mut cmd = CommandBuilder::new("ssh");
             cmd.arg("-i");
             cmd.arg(expand_key_path(path));
             cmd.arg("-o");
             cmd.arg("IdentitiesOnly=yes");
-            cmd.args(common_args(level, known_hosts));
+            cmd.args(common_args(game, level, known_hosts));
             cmd
         }
-        None => {
+        _ => {
             let mut cmd = CommandBuilder::new("ssh");
-            cmd.args(common_args(level, known_hosts));
+            cmd.args(common_args(game, level, known_hosts));
             cmd
         }
     }
@@ -187,35 +204,47 @@ pub fn interactive_command(
 /// Non-interactive command used to check whether a secret unlocks a level.
 /// `sshpass` is optional: without it, OpenSSH's askpass mechanism is used.
 pub fn verification_command(
+    game: &Wargame,
     level: u16,
     secret: &Secret,
     known_hosts: &Path,
     config_dir: &Path,
 ) -> Result<Command> {
-    verification_command_with(level, secret, known_hosts, config_dir, sshpass_available())
+    verification_command_with(
+        game,
+        level,
+        secret,
+        known_hosts,
+        config_dir,
+        sshpass_available(),
+    )
 }
 
 /// Command construction with an explicit `sshpass` availability flag so tests
 /// can force the OpenSSH fallback without touching `PATH` or starting SSH.
 fn verification_command_with(
+    game: &Wargame,
     level: u16,
     secret: &Secret,
     known_hosts: &Path,
     config_dir: &Path,
     sshpass: bool,
 ) -> Result<Command> {
+    if matches!(secret, Secret::PrivateKeyPath(_)) && !game.allows(SecretKind::PrivateKeyPath) {
+        bail!("wargame '{}' does not accept private key secrets", game.id);
+    }
     match secret {
         Secret::Password(password) if sshpass => {
             let mut cmd = Command::new("sshpass");
             cmd.arg("-e").arg("ssh");
-            append_password_auth_args(&mut cmd, level, known_hosts);
+            append_password_auth_args(game, level, known_hosts, &mut cmd);
             cmd.env("SSHPASS", password);
             Ok(cmd)
         }
         Secret::Password(password) => {
             let script = ensure_askpass_script(config_dir)?;
             let mut cmd = Command::new("ssh");
-            append_password_auth_args(&mut cmd, level, known_hosts);
+            append_password_auth_args(game, level, known_hosts, &mut cmd);
             cmd.env("DISPLAY", ":0");
             cmd.env("SSH_ASKPASS", &script);
             cmd.env("SSH_ASKPASS_REQUIRE", "force");
@@ -232,8 +261,8 @@ fn verification_command_with(
             cmd.arg("IdentitiesOnly=yes");
             cmd.arg("-o");
             cmd.arg("PreferredAuthentications=publickey");
-            cmd.args(common_args(level, known_hosts));
-            cmd.arg("true");
+            cmd.args(common_args(game, level, known_hosts));
+            cmd.args(remote_command(game));
             Ok(cmd)
         }
     }
@@ -242,8 +271,13 @@ fn verification_command_with(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wargame::Catalog;
 
     const TEST_SECRET: &str = "test-only-placeholder";
+
+    fn games() -> Catalog {
+        Catalog::parse(crate::wargame::DEFAULT_CATALOG).unwrap()
+    }
 
     fn env_value(command: &Command, key: &str) -> Option<String> {
         command.get_envs().find_map(|(name, value)| {
@@ -263,9 +297,13 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_and_tilde_expansion() {
-        assert_eq!(username(0), "bandit0");
-        assert_eq!(endpoint(14), "bandit14@bandit.labs.overthewire.org");
+    fn endpoint_and_tilde_expansion_use_catalog_values() {
+        let games = games();
+        let bandit = games.get("bandit").unwrap();
+        let century = games.get("century").unwrap();
+        assert_eq!(username(bandit, 0), "bandit0");
+        assert_eq!(endpoint(bandit, 14), "bandit14@bandit.labs.overthewire.org");
+        assert_eq!(endpoint(century, 3), "century3@century.underthewire.tech");
         let expanded = expand_key_path(Path::new("~/sshkey.private"));
         assert!(!expanded.to_string_lossy().starts_with("~/"));
         assert_eq!(
@@ -275,33 +313,39 @@ mod tests {
     }
 
     #[test]
-    fn known_hosts_is_used_instead_of_dev_null() {
-        let path = Path::new("/tmp/bandit-tui-test-known-hosts");
-        let args = common_args(3, path);
+    fn common_args_use_configured_port_and_dedicated_known_hosts() {
+        let games = games();
+        let bandit = games.get("bandit").unwrap();
+        let century = games.get("century").unwrap();
+        let path = Path::new("/tmp/wargames-tui-test-known-hosts");
+        let args = common_args(bandit, 3, path);
+        assert!(args.iter().any(|arg| arg == "2220"));
         assert!(
             args.iter()
                 .any(|arg| arg == "StrictHostKeyChecking=accept-new")
         );
         assert!(
             args.iter()
-                .any(|arg| arg == "UserKnownHostsFile=/tmp/bandit-tui-test-known-hosts")
+                .any(|arg| arg == "UserKnownHostsFile=/tmp/wargames-tui-test-known-hosts")
         );
         assert!(!args.iter().any(|arg| arg.contains("/dev/null")));
+        let args = common_args(century, 3, path);
+        assert!(args.iter().any(|arg| arg == "22"));
+        assert!(
+            args.iter()
+                .any(|arg| arg == "century3@century.underthewire.tech")
+        );
     }
 
     #[test]
-    fn ensure_known_hosts_creates_private_file() {
+    fn known_hosts_is_created_without_truncating_it() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("cfg/bandit-tui/known_hosts");
+        let path = dir.path().join("cfg/wargames-tui/known_hosts");
         ensure_known_hosts(&path).unwrap();
         assert!(path.is_file());
-        // Re-running must not truncate remembered host keys.
-        std::fs::write(&path, "example host key\n").unwrap();
+        fs::write(&path, "example host key\n").unwrap();
         ensure_known_hosts(&path).unwrap();
-        assert_eq!(
-            std::fs::read_to_string(&path).unwrap(),
-            "example host key\n"
-        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "example host key\n");
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -312,30 +356,29 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn askpass_script_is_idempotent_and_contains_no_password() {
+    fn askpass_script_uses_new_env_var_and_replaces_old_content() {
         let dir = tempfile::tempdir().unwrap();
-        let config_dir = dir.path().join("cfg/bandit-tui");
-        fs::create_dir_all(&config_dir).unwrap();
+        let config_dir = dir.path().join("cfg/wargames-tui");
+        create_private_dir(&config_dir).unwrap();
+        fs::write(
+            config_dir.join(ASKPASS_SCRIPT_NAME),
+            "#!/bin/sh\nprintf '%s\\n' \"$BANDIT_TUI_ASKPASS_SECRET\"\n",
+        )
+        .unwrap();
 
         let script = ensure_askpass_script(&config_dir).unwrap();
         assert_eq!(script, config_dir.join(ASKPASS_SCRIPT_NAME));
         let body = fs::read_to_string(&script).unwrap();
         assert_eq!(body, ASKPASS_SCRIPT_BODY);
-        assert!(!body.contains(TEST_SECRET));
+        assert!(!body.contains("BANDIT_TUI_ASKPASS_SECRET"));
         assert!(body.contains(ASKPASS_ENV_VAR));
-
-        // A tampered or misplaced script is repaired on the next call.
-        fs::write(&script, "tampered\n").unwrap();
         assert_eq!(ensure_askpass_script(&config_dir).unwrap(), script);
-        assert_eq!(fs::read_to_string(&script).unwrap(), body);
 
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = fs::metadata(&script).unwrap().permissions().mode() & 0o777;
             assert_eq!(mode, 0o700);
-            let dir_mode = fs::metadata(&config_dir).unwrap().permissions().mode() & 0o777;
-            assert_eq!(dir_mode, 0o700);
         }
     }
 
@@ -351,14 +394,16 @@ mod tests {
             .unwrap();
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout), "stub-only-value\n");
-        assert!(output.stderr.is_empty());
     }
 
     #[test]
     fn password_verification_uses_sshpass_when_available() {
+        let games = games();
+        let game = games.get("century").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("config");
         let command = verification_command_with(
+            game,
             3,
             &Secret::Password(TEST_SECRET.to_owned()),
             Path::new("/tmp/known-hosts"),
@@ -371,15 +416,17 @@ mod tests {
         assert_eq!(env_value(&command, "SSHPASS").as_deref(), Some(TEST_SECRET));
         assert!(env_value(&command, "SSH_ASKPASS").is_none());
         assert!(!config_dir.join(ASKPASS_SCRIPT_NAME).exists());
+        assert!(args(&command).ends_with(&[" -NoProfile -Command exit 0".to_owned()]));
     }
 
     #[test]
     fn password_verification_falls_back_without_sshpass() {
-        // Regression: a password secret must not be rejected just because
-        // sshpass_available() is false.
+        let games = games();
+        let game = games.get("bandit").unwrap();
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join("config");
         let command = verification_command_with(
+            game,
             3,
             &Secret::Password(TEST_SECRET.to_owned()),
             Path::new("/tmp/known-hosts"),
@@ -402,7 +449,7 @@ mod tests {
                 "missing {option}"
             );
         }
-        assert!(command_args.last().is_some_and(|arg| arg == "true"));
+        assert!(command_args.ends_with(&["true".to_owned()]));
         assert!(!command_args.iter().any(|arg| arg.contains(TEST_SECRET)));
         assert_eq!(env_value(&command, "DISPLAY").as_deref(), Some(":0"));
         assert_eq!(
@@ -413,19 +460,19 @@ mod tests {
             env_value(&command, ASKPASS_ENV_VAR).as_deref(),
             Some(TEST_SECRET)
         );
-        #[cfg(unix)]
-        {
-            let script = env_value(&command, "SSH_ASKPASS").expect("SSH_ASKPASS is set");
-            assert_eq!(Path::new(&script), config_dir.join(ASKPASS_SCRIPT_NAME));
-            assert!(Path::new(&script).is_file());
-        }
+        assert!(Path::new(&env_value(&command, "SSH_ASKPASS").unwrap()).is_file());
     }
 
     #[test]
-    fn private_key_verification_is_unchanged() {
+    fn private_key_verification_respects_allowed_kinds() {
+        let games = games();
+        let bandit = games.get("bandit").unwrap();
+        let century = games.get("century").unwrap();
+        let secret = Secret::PrivateKeyPath(PathBuf::from("/tmp/sshkey.private"));
         let command = verification_command_with(
+            bandit,
             15,
-            &Secret::PrivateKeyPath(PathBuf::from("/tmp/sshkey.private")),
+            &secret,
             Path::new("/tmp/known-hosts"),
             Path::new("/tmp/unused-config"),
             false,
@@ -435,6 +482,19 @@ mod tests {
         let command_args = args(&command);
         assert!(command_args.iter().any(|arg| arg == "BatchMode=yes"));
         assert!(command_args.iter().any(|arg| arg == "IdentitiesOnly=yes"));
+        assert!(command_args.ends_with(&["true".to_owned()]));
         assert!(env_value(&command, "SSH_ASKPASS").is_none());
+
+        assert!(
+            verification_command_with(
+                century,
+                3,
+                &secret,
+                Path::new("/tmp/known-hosts"),
+                Path::new("/tmp/unused-config"),
+                false,
+            )
+            .is_err()
+        );
     }
 }

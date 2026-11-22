@@ -6,22 +6,25 @@ mod signals;
 mod ssh;
 mod ui;
 mod verify;
+mod wargame;
 mod widgets;
 
 use anyhow::Result;
 use app::App;
 use credentials::Paths;
+use crossterm::clipboard::CopyToClipboard;
 use crossterm::event::{
     self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
 };
 use portable_pty::PtySize;
+use std::io::stdout;
 use std::time::Duration;
 
 fn main() {
     // Raw mode and the alternate screen must be restored even on panic.
     let previous_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        set_terminal_modes(false);
+        set_terminal_modes(false, false);
         ratatui::restore();
         previous_hook(info);
     }));
@@ -29,40 +32,50 @@ fn main() {
     // SIGINT/SIGTERM only flip a flag; the event loop then exits normally so
     // raw mode, the alternate screen, and the SSH process group are cleaned up.
     if let Err(error) = signals::install() {
-        eprintln!("bandit-tui: could not install signal handlers: {error}");
+        eprintln!("wargames-tui: could not install signal handlers: {error}");
     }
 
     let mut terminal = ratatui::init();
-    set_terminal_modes(true);
+    set_terminal_modes(true, true);
     let result = run(&mut terminal);
-    set_terminal_modes(false);
+    set_terminal_modes(false, false);
     ratatui::restore();
 
     if let Err(error) = result {
-        eprintln!("bandit-tui: {error:#}");
+        eprintln!("wargames-tui: {error:#}");
         std::process::exit(1);
     }
 }
 
-/// Bracketed paste and mouse capture are both enabled for the UI lifetime and
-/// disabled on every exit path, including the panic hook above.
-fn set_terminal_modes(enabled: bool) {
-    let paste = if enabled {
-        crossterm::execute!(std::io::stdout(), EnableBracketedPaste)
+/// Bracketed paste is always on for the UI lifetime. Mouse capture follows
+/// `App::native_mouse_mode` and is changed only when it actually flips.
+fn set_terminal_modes(paste: bool, mouse: bool) {
+    let paste_result = if paste {
+        crossterm::execute!(stdout(), EnableBracketedPaste)
     } else {
-        crossterm::execute!(std::io::stdout(), DisableBracketedPaste)
+        crossterm::execute!(stdout(), DisableBracketedPaste)
     };
-    if let Err(error) = paste {
-        eprintln!("bandit-tui: could not set bracketed paste mode: {error}");
+    if let Err(error) = paste_result {
+        eprintln!("wargames-tui: could not set bracketed paste mode: {error}");
     }
+    set_mouse_capture(mouse);
+}
 
-    let mouse = if enabled {
-        crossterm::execute!(std::io::stdout(), EnableMouseCapture)
+fn set_mouse_capture(enabled: bool) {
+    let result = if enabled {
+        crossterm::execute!(stdout(), EnableMouseCapture)
     } else {
-        crossterm::execute!(std::io::stdout(), DisableMouseCapture)
+        crossterm::execute!(stdout(), DisableMouseCapture)
     };
-    if let Err(error) = mouse {
-        eprintln!("bandit-tui: could not set mouse capture: {error}");
+    if let Err(error) = result {
+        eprintln!("wargames-tui: could not set mouse capture: {error}");
+    }
+}
+
+/// Best-effort OSC 52 copy. Terminal support varies, so failures are ignored.
+fn drain_clipboard(app: &mut App) {
+    for text in app.pending_clipboard.drain(..) {
+        let _ = crossterm::execute!(stdout(), CopyToClipboard::to_clipboard_from(text));
     }
 }
 
@@ -78,10 +91,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
 
     let (tx, rx) = App::messages();
     let mut app = App::new(Paths::from_env(), area.into(), pane_size, tx)?;
+    let mut mouse_enabled = true;
 
     while !app.should_quit {
         if signals::quit_requested() {
-            app.should_quit = true;
             break;
         }
         if event::poll(Duration::from_millis(50))? {
@@ -90,6 +103,13 @@ fn run(terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         while let Ok(message) = rx.try_recv() {
             app.handle_message(message)?;
         }
+
+        let desired_mouse = !app.native_mouse_mode;
+        if desired_mouse != mouse_enabled {
+            set_mouse_capture(desired_mouse);
+            mouse_enabled = desired_mouse;
+        }
+        drain_clipboard(&mut app);
         terminal.draw(|frame| ui::render(frame, &app))?;
     }
 

@@ -6,8 +6,27 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 use vt100::{Cell as VtCell, Color as VtColor, Screen};
 
+/// Inclusive range of selected columns on one screen row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SelectionRow {
+    pub row: u16,
+    pub first_column: u16,
+    pub last_column: u16,
+}
+
+/// Line-oriented selection: each row carries exactly the columns whose text is
+/// copied. Keeping the highlight in the same shape as text extraction prevents
+/// the highlighted cells from drifting away from the inserted/copied text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Selection {
+    pub rows: Vec<SelectionRow>,
+}
+
 pub struct Vt100Widget<'a> {
     pub screen: &'a Screen,
+    /// Optional in-app selection; rendered by reversing cell styles without
+    /// mutating the vt100 parser state.
+    pub selection: Option<Selection>,
 }
 
 impl Widget for Vt100Widget<'_> {
@@ -21,10 +40,29 @@ impl Widget for Vt100Widget<'_> {
                     target.set_symbol(cell_symbol(cell));
                     // Apply styles to blank cells too, so an erased cell cannot
                     // inherit styling from the glyph it replaces.
-                    target.set_style(cell_style(cell));
+                    let mut style = cell_style(cell);
+                    // Continuation cells carry no text, so they must not be
+                    // highlighted: extraction skips them as well.
+                    if !cell.is_wide_continuation()
+                        && self
+                            .selection
+                            .as_ref()
+                            .is_some_and(|selection| selection.contains(row, column))
+                    {
+                        style = style.add_modifier(Modifier::REVERSED);
+                    }
+                    target.set_style(style);
                 }
             }
         }
+    }
+}
+
+impl Selection {
+    fn contains(&self, row: u16, column: u16) -> bool {
+        self.rows.iter().any(|selected| {
+            selected.row == row && column >= selected.first_column && column <= selected.last_column
+        })
     }
 }
 
@@ -90,9 +128,10 @@ mod tests {
         )
     }
 
-    fn render_screen(parser: &vt100::Parser, buf: &mut Buffer) {
+    fn render_screen(parser: &vt100::Parser, buf: &mut Buffer, selection: Option<Selection>) {
         Vt100Widget {
             screen: parser.screen(),
+            selection,
         }
         .render(AREA, buf);
     }
@@ -101,14 +140,13 @@ mod tests {
     fn cleared_cells_render_as_spaces_instead_of_stale_text() {
         let mut parser = parser();
         let mut buf = Buffer::empty(AREA);
-
         parser.process(b"stale");
-        render_screen(&parser, &mut buf);
+        render_screen(&parser, &mut buf, None);
         assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "s");
 
         parser.process(b"\x1b[2J");
         assert!(!parser.screen().cell(0, 0).unwrap().has_contents());
-        render_screen(&parser, &mut buf);
+        render_screen(&parser, &mut buf, None);
         assert_eq!(buf.cell((0, 0)).unwrap().symbol(), " ");
         assert_eq!(buf.cell((4, 0)).unwrap().symbol(), " ");
     }
@@ -117,12 +155,57 @@ mod tests {
     fn wide_character_continuation_still_renders_as_empty() {
         let mut parser = parser();
         let mut buf = Buffer::empty(AREA);
-
         parser.process("界".as_bytes());
         assert!(parser.screen().cell(0, 1).unwrap().is_wide_continuation());
-        render_screen(&parser, &mut buf);
-
+        render_screen(&parser, &mut buf, None);
         assert_eq!(buf.cell((0, 0)).unwrap().symbol(), "界");
         assert_eq!(buf.cell((1, 0)).unwrap().symbol(), "");
+    }
+
+    #[test]
+    fn selection_reverses_cells_without_mutating_parser_state() {
+        let mut parser = parser();
+        let mut buf = Buffer::empty(AREA);
+        parser.process(b"abcde\r\nfghij");
+        let selection = Selection {
+            rows: vec![
+                SelectionRow {
+                    row: 0,
+                    first_column: 1,
+                    last_column: 7,
+                },
+                SelectionRow {
+                    row: 1,
+                    first_column: 0,
+                    last_column: 2,
+                },
+            ],
+        };
+        render_screen(&parser, &mut buf, Some(selection));
+        assert!(
+            buf.cell((1, 0))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert!(
+            buf.cell((2, 1))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert!(
+            !buf.cell((0, 0))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert!(
+            !buf.cell((3, 1))
+                .unwrap()
+                .modifier
+                .contains(Modifier::REVERSED)
+        );
+        assert_eq!(parser.screen().contents(), "abcde\nfghij");
     }
 }

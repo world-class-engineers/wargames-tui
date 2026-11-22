@@ -7,11 +7,11 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Highest real Bandit level (the game has 34 levels, 0 through 33; page
-/// `bandit34.html` is only a placeholder). Used to sanity-check persisted state.
-pub const MAX_LEVEL: u16 = 33;
+/// Multi-game credentials schema version.
+pub const SCHEMA_VERSION: u32 = 2;
 
-/// A secret used to authenticate against the next Bandit level.
+/// A secret used to authenticate against the next level of a wargame.
+/// The externally tagged JSON representation is preserved from schema v1.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Secret {
     Password(String),
@@ -28,21 +28,70 @@ impl Secret {
     }
 }
 
-/// Persisted progress. Keys in `secrets` are the level the secret unlocks.
+/// Progress for one wargame. Keys in `secrets` are the level the secret unlocks.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct Credentials {
+pub struct GameProgress {
     pub last_level: u16,
     pub secrets: BTreeMap<u16, Secret>,
 }
 
-impl Credentials {
+impl GameProgress {
     pub fn insert(&mut self, level: u16, secret: Secret) {
         self.secrets.insert(level, secret);
     }
 
     pub fn get(&self, level: u16) -> Option<&Secret> {
         self.secrets.get(&level)
+    }
+}
+
+/// Persisted state for every wargame. Unknown game ids are preserved as-is.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Credentials {
+    #[serde(default = "schema_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub last_wargame: String,
+    #[serde(default)]
+    pub games: BTreeMap<String, GameProgress>,
+}
+
+fn schema_version() -> u32 {
+    SCHEMA_VERSION
+}
+
+impl Default for Credentials {
+    fn default() -> Self {
+        Self {
+            version: SCHEMA_VERSION,
+            last_wargame: String::new(),
+            games: BTreeMap::new(),
+        }
+    }
+}
+
+impl Credentials {
+    /// Progress for a game, or an empty record if there is none yet.
+    pub fn progress(&self, game_id: &str) -> GameProgress {
+        self.games.get(game_id).cloned().unwrap_or_default()
+    }
+
+    /// Mutable progress for a game, creating it on demand.
+    pub fn progress_mut(&mut self, game_id: &str) -> &mut GameProgress {
+        self.games.entry(game_id.to_owned()).or_default()
+    }
+
+    pub fn set_last_wargame(&mut self, game_id: &str) {
+        self.last_wargame = game_id.to_owned();
+    }
+
+    pub fn set_last_level(&mut self, game_id: &str, level: u16) {
+        self.progress_mut(game_id).last_level = level;
+    }
+
+    pub fn store_secret(&mut self, game_id: &str, level: u16, secret: Secret) {
+        self.progress_mut(game_id).insert(level, secret);
     }
 }
 
@@ -54,17 +103,18 @@ pub struct Paths {
 }
 
 impl Paths {
-    /// Resolve XDG-style directories with a home-directory fallback.
+    /// Resolve XDG-style directories with a home-directory fallback. The old
+    /// `bandit-tui` directories are deliberately never read or migrated.
     pub fn from_env() -> Self {
         let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
         let config_dir = std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".config"))
-            .join("bandit-tui");
+            .join("wargames-tui");
         let cache_dir = std::env::var_os("XDG_CACHE_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".cache"))
-            .join("bandit-tui");
+            .join("wargames-tui");
         Self {
             config_dir,
             cache_dir,
@@ -73,6 +123,10 @@ impl Paths {
 
     pub fn credentials_file(&self) -> PathBuf {
         self.config_dir.join("credentials.json")
+    }
+
+    pub fn catalog_file(&self) -> PathBuf {
+        self.config_dir.join("wargames.toml")
     }
 
     /// Dedicated known-hosts file so SSH host keys are remembered between
@@ -159,7 +213,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn secret_serde_round_trip() {
+    fn secret_serde_round_trip_preserves_external_tagging() {
         let secrets = vec![
             Secret::Password("a p@ss word".to_owned()),
             Secret::PrivateKeyPath(PathBuf::from("/home/user/.ssh/sshkey.private")),
@@ -169,29 +223,55 @@ mod tests {
             let decoded: Secret = serde_json::from_str(&json).unwrap();
             assert_eq!(decoded, secret);
         }
+        assert_eq!(
+            serde_json::to_value(Secret::Password("x".to_owned())).unwrap(),
+            serde_json::json!({ "Password": "x" })
+        );
     }
 
     #[test]
-    fn credentials_round_trip_and_defaults() {
+    fn multi_game_schema_round_trip_and_isolation() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config/credentials.json");
+        let mut creds = Credentials::default();
+        assert_eq!(creds.version, SCHEMA_VERSION);
         assert_eq!(load_credentials(&path).unwrap(), Credentials::default());
 
-        let mut creds = Credentials {
-            last_level: 14,
-            ..Credentials::default()
-        };
-        creds.insert(14, Secret::Password("s3cret".to_owned()));
-        creds.insert(
+        creds.set_last_wargame("bandit");
+        creds.set_last_level("bandit", 14);
+        creds.store_secret("bandit", 14, Secret::Password("s3cret".to_owned()));
+        creds.store_secret(
+            "bandit",
             15,
             Secret::PrivateKeyPath(PathBuf::from("~/sshkey.private")),
+        );
+        creds.set_last_level("century", 3);
+        creds.store_secret("century", 3, Secret::Password("century3".to_owned()));
+        // Unknown ids are preserved, not interpreted or dropped.
+        creds.games.insert(
+            "future-game".to_owned(),
+            GameProgress {
+                last_level: 7,
+                secrets: BTreeMap::new(),
+            },
         );
         save_credentials(&path, &creds).unwrap();
 
         let loaded = load_credentials(&path).unwrap();
-        assert_eq!(loaded.last_level, 14);
-        assert_eq!(loaded.get(14), creds.get(14));
-        assert_eq!(loaded.get(15), creds.get(15));
+        assert_eq!(loaded.version, SCHEMA_VERSION);
+        assert_eq!(loaded.last_wargame, "bandit");
+        assert_eq!(loaded.progress("bandit").last_level, 14);
+        assert_eq!(
+            loaded.progress("bandit").get(14),
+            Some(&Secret::Password("s3cret".to_owned()))
+        );
+        assert_eq!(loaded.progress("century").last_level, 3);
+        assert_eq!(
+            loaded.progress("century").get(3),
+            Some(&Secret::Password("century3".to_owned()))
+        );
+        assert!(loaded.progress("bandit").get(3).is_none());
+        assert_eq!(loaded.games.get("future-game").unwrap().last_level, 7);
 
         #[cfg(unix)]
         {
@@ -208,22 +288,29 @@ mod tests {
     }
 
     #[test]
-    fn paths_use_xdg_overrides() {
+    fn paths_use_xdg_names_and_wargames_suffix() {
         let paths = Paths {
-            config_dir: PathBuf::from("/tmp/cfg/bandit-tui"),
-            cache_dir: PathBuf::from("/tmp/cache/bandit-tui"),
+            config_dir: PathBuf::from("/tmp/cfg/wargames-tui"),
+            cache_dir: PathBuf::from("/tmp/cache/wargames-tui"),
         };
         assert_eq!(
             paths.credentials_file(),
-            PathBuf::from("/tmp/cfg/bandit-tui/credentials.json")
+            PathBuf::from("/tmp/cfg/wargames-tui/credentials.json")
+        );
+        assert_eq!(
+            paths.catalog_file(),
+            PathBuf::from("/tmp/cfg/wargames-tui/wargames.toml")
         );
         assert_eq!(
             paths.known_hosts_file(),
-            PathBuf::from("/tmp/cfg/bandit-tui/known_hosts")
+            PathBuf::from("/tmp/cfg/wargames-tui/known_hosts")
         );
         assert_eq!(
             paths.levels_dir(),
-            PathBuf::from("/tmp/cache/bandit-tui/levels")
+            PathBuf::from("/tmp/cache/wargames-tui/levels")
         );
+        let text = format!("{:?}", Paths::from_env());
+        assert!(text.contains("wargames-tui"), "{text}");
+        assert!(!text.contains("bandit-tui"), "{text}");
     }
 }

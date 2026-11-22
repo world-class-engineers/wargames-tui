@@ -1,0 +1,550 @@
+# Default wargame catalog for wargames-tui.
+#
+# This file is seeded into the user config directory on first run. Once seeded,
+# the user's copy is authoritative: edits here after seeding have no effect
+# unless the user replaces their config file manually.
+
+version = 1
+
+[[wargames]]
+id = "bandit"
+name = "OverTheWire Bandit"
+homepage = "https://overthewire.org/wargames/bandit/"
+ssh_host = "bandit.labs.overthewire.org"
+ssh_port = 2220
+username_template = "bandit{level}"
+level_label = "bandit{level}"
+first_level = 0
+final_level = 33
+page_offset = 1
+allowed_secret_kinds = ["password", "private_key_path"]
+initial_secret = { kind = "password", value = "bandit0" }
+verification_remote_command = "true"
+completion_message = "Bandit 33 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/bandit/bandit{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "bandit"
+expected = "page"
+
+[[wargames]]
+id = "leviathan"
+name = "OverTheWire Leviathan"
+homepage = "https://overthewire.org/wargames/leviathan/"
+ssh_host = "leviathan.labs.overthewire.org"
+ssh_port = 2223
+username_template = "leviathan{level}"
+level_label = "leviathan{level}"
+first_level = 0
+final_level = 7
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "leviathan0" }
+verification_remote_command = "true"
+completion_message = "Leviathan 7 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/leviathan/leviathan{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "leviathan"
+expected = "page"
+
+[[wargames]]
+id = "krypton"
+name = "OverTheWire Krypton"
+homepage = "https://overthewire.org/wargames/krypton/"
+ssh_host = "krypton.labs.overthewire.org"
+ssh_port = 2231
+username_template = "krypton{level}"
+level_label = "krypton{level}"
+first_level = 1
+final_level = 7
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "KRYPTONISGREAT" }
+verification_remote_command = "true"
+completion_message = "Krypton 7 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/krypton/krypton{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "krypton"
+expected = "page"
+
+[[wargames]]
+id = "narnia"
+name = "OverTheWire Narnia"
+homepage = "https://overthewire.org/wargames/narnia/"
+ssh_host = "narnia.labs.overthewire.org"
+ssh_port = 2226
+username_template = "narnia{level}"
+level_label = "narnia{level}"
+first_level = 0
+final_level = 9
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "narnia0" }
+verification_remote_command = "true"
+completion_message = "Narnia 9 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/narnia/narnia{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "narnia"
+expected = "page"
+
+[[wargames]]
+id = "behemoth"
+name = "OverTheWire Behemoth"
+homepage = "https://overthewire.org/wargames/behemoth/"
+ssh_host = "behemoth.labs.overthewire.org"
+ssh_port = 2221
+username_template = "behemoth{level}"
+level_label = "behemoth{level}"
+first_level = 0
+final_level = 8
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "behemoth0" }
+verification_remote_command = "true"
+completion_message = "Behemoth 8 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/behemoth/behemoth{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "behemoth"
+expected = "page"
+
+[[wargames]]
+id = "utumno"
+name = "OverTheWire Utumno"
+homepage = "https://overthewire.org/wargames/utumno/"
+ssh_host = "utumno.labs.overthewire.org"
+ssh_port = 2227
+username_template = "utumno{level}"
+level_label = "utumno{level}"
+first_level = 0
+final_level = 9
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "utumno0" }
+verification_remote_command = "true"
+completion_message = "Utumno 9 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/utumno/utumno{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "utumno"
+expected = "page"
+
+[[wargames]]
+id = "maze"
+name = "OverTheWire Maze"
+homepage = "https://overthewire.org/wargames/maze/"
+ssh_host = "maze.labs.overthewire.org"
+ssh_port = 2225
+username_template = "maze{level}"
+level_label = "maze{level}"
+first_level = 0
+final_level = 8
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "maze0" }
+verification_remote_command = "true"
+completion_message = "Maze 8 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/maze/maze{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "maze"
+expected = "page"
+
+[[wargames]]
+id = "vortex"
+name = "OverTheWire Vortex"
+homepage = "https://overthewire.org/wargames/vortex/"
+ssh_host = "vortex.labs.overthewire.org"
+ssh_port = 2228
+username_template = "vortex{level}"
+level_label = "vortex{level}"
+first_level = 1
+final_level = 26
+page_offset = 0
+allowed_secret_kinds = ["password"]
+verification_remote_command = "true"
+completion_message = "Vortex 26 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/vortex/vortex{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "vortex"
+expected = "page"
+
+[[wargames]]
+id = "manpage"
+name = "OverTheWire Manpage"
+homepage = "https://overthewire.org/wargames/manpage/"
+ssh_host = "manpage.labs.overthewire.org"
+ssh_port = 2224
+username_template = "manpage{level}"
+level_label = "manpage{level}"
+first_level = 0
+final_level = 6
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "manpage0" }
+verification_remote_command = "true"
+completion_message = "Manpage 6 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/manpage/manpage{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "manpage"
+expected = "page"
+
+[[wargames]]
+id = "drifter"
+name = "OverTheWire Drifter"
+homepage = "https://overthewire.org/wargames/drifter/"
+ssh_host = "drifter.labs.overthewire.org"
+ssh_port = 2230
+username_template = "drifter{level}"
+level_label = "drifter{level}"
+first_level = 0
+final_level = 15
+page_offset = 0
+allowed_secret_kinds = ["password"]
+verification_remote_command = "true"
+completion_message = "Drifter 15 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/drifter/drifter{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "drifter"
+expected = "page"
+
+[[wargames]]
+id = "formulaone"
+name = "OverTheWire FormulaOne"
+homepage = "https://overthewire.org/wargames/formulaone/"
+ssh_host = "formulaone.labs.overthewire.org"
+ssh_port = 2232
+username_template = "formulaone{level}"
+level_label = "formulaone{level}"
+first_level = 0
+final_level = 5
+page_offset = 0
+allowed_secret_kinds = ["password"]
+verification_remote_command = "true"
+completion_message = "FormulaOne 5 is the final level — game complete."
+
+[wargames.source]
+kind = "html"
+url_template = "https://overthewire.org/wargames/formulaone/formulaone{page}.html"
+cache_version = 1
+
+[wargames.source.selectors]
+content = "main#content"
+heading = "h2"
+goal = "level-goal"
+commands = "commands"
+reading = "reading"
+text_tags = ["p", "ul", "ol", "pre", "div"]
+
+[wargames.source.validation]
+kind = "script_call"
+selector = "main#content script"
+marker = "renderLevelTitle"
+game_token = "formulaone"
+expected = "page"
+
+[[wargames]]
+id = "century"
+name = "UnderTheWire Century"
+homepage = "https://underthewire.tech/wargames/century"
+ssh_host = "century.underthewire.tech"
+ssh_port = 22
+username_template = "century{level}"
+level_label = "Century {level}"
+first_level = 1
+final_level = 15
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "century1" }
+verification_remote_command = " -NoProfile -Command exit 0"
+completion_message = "Century 15 is the final level — all 14 challenges complete. Congratulations!"
+
+[wargames.source]
+kind = "js_json"
+entry_url_template = "https://underthewire.tech/wargames/{game}/{page}"
+asset_selector = "script[type=module][src]"
+asset_base_url = "https://underthewire.tech"
+json_marker = "JSON.parse('"
+game_key = "century"
+cache_version = 1
+
+[wargames.source.fields]
+title = "title"
+goal = "prompt"
+notes = "note"
+
+[[wargames]]
+id = "cyborg"
+name = "UnderTheWire Cyborg"
+homepage = "https://underthewire.tech/wargames/cyborg"
+ssh_host = "cyborg.underthewire.tech"
+ssh_port = 22
+username_template = "cyborg{level}"
+level_label = "Cyborg {level}"
+first_level = 1
+final_level = 15
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "cyborg1" }
+verification_remote_command = " -NoProfile -Command exit 0"
+completion_message = "Cyborg 15 is the final level — all 14 challenges complete. Congratulations!"
+
+[wargames.source]
+kind = "js_json"
+entry_url_template = "https://underthewire.tech/wargames/{game}/{page}"
+asset_selector = "script[type=module][src]"
+asset_base_url = "https://underthewire.tech"
+json_marker = "JSON.parse('"
+game_key = "cyborg"
+cache_version = 1
+
+[wargames.source.fields]
+title = "title"
+goal = "prompt"
+notes = "note"
+
+[[wargames]]
+id = "groot"
+name = "UnderTheWire Groot"
+homepage = "https://underthewire.tech/wargames/groot"
+ssh_host = "groot.underthewire.tech"
+ssh_port = 22
+username_template = "groot{level}"
+level_label = "Groot {level}"
+first_level = 1
+final_level = 15
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "groot1" }
+verification_remote_command = " -NoProfile -Command exit 0"
+completion_message = "Groot 15 is the final level — all 14 challenges complete. Congratulations!"
+
+[wargames.source]
+kind = "js_json"
+entry_url_template = "https://underthewire.tech/wargames/{game}/{page}"
+asset_selector = "script[type=module][src]"
+asset_base_url = "https://underthewire.tech"
+json_marker = "JSON.parse('"
+game_key = "groot"
+cache_version = 1
+
+[wargames.source.fields]
+title = "title"
+goal = "prompt"
+notes = "note"
+
+[[wargames]]
+id = "oracle"
+name = "UnderTheWire Oracle"
+homepage = "https://underthewire.tech/wargames/oracle"
+ssh_host = "oracle.underthewire.tech"
+ssh_port = 22
+username_template = "oracle{level}"
+level_label = "Oracle {level}"
+first_level = 1
+final_level = 15
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "oracle1" }
+verification_remote_command = " -NoProfile -Command exit 0"
+completion_message = "Oracle 15 is the final level — all 14 challenges complete. Congratulations!"
+
+[wargames.source]
+kind = "js_json"
+entry_url_template = "https://underthewire.tech/wargames/{game}/{page}"
+asset_selector = "script[type=module][src]"
+asset_base_url = "https://underthewire.tech"
+json_marker = "JSON.parse('"
+game_key = "oracle"
+cache_version = 1
+
+[wargames.source.fields]
+title = "title"
+goal = "prompt"
+notes = "note"
+
+[[wargames]]
+id = "trebek"
+name = "UnderTheWire Trebek"
+homepage = "https://underthewire.tech/wargames/trebek"
+ssh_host = "trebek.underthewire.tech"
+ssh_port = 22
+username_template = "trebek{level}"
+level_label = "Trebek {level}"
+first_level = 1
+final_level = 15
+page_offset = 0
+allowed_secret_kinds = ["password"]
+initial_secret = { kind = "password", value = "trebek1" }
+verification_remote_command = " -NoProfile -Command exit 0"
+completion_message = "Trebek 15 is the final level — all 14 challenges complete. Congratulations!"
+
+[wargames.source]
+kind = "js_json"
+entry_url_template = "https://underthewire.tech/wargames/{game}/{page}"
+asset_selector = "script[type=module][src]"
+asset_base_url = "https://underthewire.tech"
+json_marker = "JSON.parse('"
+game_key = "trebek"
+cache_version = 1
+
+[wargames.source.fields]
+title = "title"
+goal = "prompt"
+notes = "note"
